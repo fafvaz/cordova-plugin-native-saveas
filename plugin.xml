@@ -15,15 +15,14 @@
 
   <!-- Android -->
   <platform name="android">
-    <config-file target="res/xml/config.xml" parent="/*">
-      <feature name="NativeSaveAs">
-        <param name="android-package" value="com.outsystems.nativesaveas.NativeSaveAs" />
-      </feature>
-    </config-file>
+      <config-file target="res/xml/config.xml" parent="/*">
+          <feature name="NativeSaveAs">
+              <param name="android-package" value="com.outsystems.nativesaveas.NativeSaveAs" />
+          </feature>
+      </config-file>
 
-    <!-- Kotlin source -->
-    <source-file src="src/android/com/outsystems/nativesaveas/NativeSaveAs.kt"
-                 target-dir="src/com/outsystems/nativesaveas" />
+      <source-file src="src/android/com/outsystems/nativesaveas/NativeSaveAs.kt" target-dir="src/com/outsystems/nativesaveas" />
+      <framework src="src/android/build.gradle" custom="true" type="gradleReference" />
   </platform>
 
   <!-- iOS (opcional, pode implementar depois) -->
