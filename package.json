@@ -1,0 +1,12 @@
+{
+  "name": "cordova-plugin-native-saveas",
+  "version": "1.0.0",
+  "description": "Native SaveAs dialog for Android and iOS",
+  "cordova": {
+    "id": "cordova-plugin-native-saveas",
+    "platforms": ["android", "ios"]
+  },
+  "keywords": ["cordova", "save", "file", "dialog", "native"],
+  "author": "FV",
+  "license": "MIT"
+}
