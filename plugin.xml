@@ -9,8 +9,8 @@
   <license>MIT</license>
   <keywords>save, native, dialog, file</keywords>
 
-  <js-module src="www/NativeSaveAs.js" name="SaveAs">
-    <clobbers target="cordova.plugins.SaveAs" />
+  <js-module src="www/NativeSaveAs.js" name="NativeSaveAs">
+    <clobbers target="cordova.plugins.NativeSaveAs" />
   </js-module>
 
   <!-- Android -->
