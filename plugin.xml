@@ -1,4 +1,4 @@
-<?xml version='1.0' encoding='utf-8'?>
+<?xml version="1.0" encoding="utf-8"?>
 <plugin id="cordova-plugin-native-saveas"
         version="1.0.0"
         xmlns="http://apache.org/cordova/ns/plugins"
@@ -21,23 +21,19 @@
       </feature>
     </config-file>
 
-    <!-- Kotlin and Coroutines dependencies -->
-    <framework src="src/android/build.gradle" custom="true" type="gradleReference" />
-    
-    <source-file src="src/android/NativeSaveAs.kt" target-dir="src/com/outsystems/nativesaveas" />
+    <!-- Kotlin source -->
+    <source-file src="src/android/com/outsystems/nativesaveas/NativeSaveAs.kt"
+                 target-dir="src/com/outsystems/nativesaveas" />
   </platform>
 
-  <!-- iOS -->
+  <!-- iOS (opcional, pode implementar depois) -->
   <platform name="ios">
     <config-file target="config.xml" parent="/*">
       <feature name="NativeSaveAs">
         <param name="ios-package" value="NativeSaveAs" />
       </feature>
     </config-file>
-    
     <source-file src="src/ios/NativeSaveAs.swift" />
-    
-    <!-- Swift support -->
     <dependency id="cordova-plugin-add-swift-support" version="2.0.2" />
   </platform>
 
