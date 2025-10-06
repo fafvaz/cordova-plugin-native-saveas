@@ -26,23 +26,17 @@ var NativeSaveAs = {
     saveBase64: function(base64String, filename, mimeType, successCallback, errorCallback) {
         // Validate inputs
         if (!base64String || typeof base64String !== 'string') {
-            if (errorCallback) {
-                errorCallback('Invalid base64 string: must be a non-empty string');
-            }
+            errorCallback && errorCallback('Invalid base64 string: must be a non-empty string');
             return;
         }
         
         if (!filename || typeof filename !== 'string') {
-            if (errorCallback) {
-                errorCallback('Invalid filename: must be a non-empty string');
-            }
+            errorCallback && errorCallback('Invalid filename: must be a non-empty string');
             return;
         }
         
         if (!mimeType || typeof mimeType !== 'string') {
-            if (errorCallback) {
-                errorCallback('Invalid MIME type: must be a non-empty string');
-            }
+            errorCallback && errorCallback('Invalid MIME type: must be a non-empty string');
             return;
         }
 
@@ -54,8 +48,12 @@ var NativeSaveAs = {
 
         // Execute native plugin
         exec(
-            successCallback,
-            errorCallback,
+            function(result) {
+                successCallback && successCallback(result);
+            },
+            function(error) {
+                errorCallback && errorCallback(error);
+            },
             "NativeSaveAs",
             "saveBase64",
             [cleanBase64, filename, mimeType]
