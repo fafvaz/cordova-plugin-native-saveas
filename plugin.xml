@@ -9,18 +9,18 @@
   <license>MIT</license>
   <keywords>save, native, dialog, file</keywords>
 
-  <js-module src="www/SaveAs.js" name="SaveAs">
+  <js-module src="www/NativeSaveAs.js" name="SaveAs">
     <clobbers target="cordova.plugins.SaveAs" />
   </js-module>
 
   <!-- Android -->
   <platform name="android">
-    <source-file src="src/android/SaveAs.java" target-dir="src/com/outsystems/native/saveas" />
+    <source-file src="src/android/NativeSaveAs.kt" target-dir="src/com/outsystems/native/saveas" />
   </platform>
 
   <!-- iOS -->
   <platform name="ios">
-    <source-file src="src/ios/SaveAs.swift" />
+    <source-file src="src/ios/NativeSaveAs.swift" />
   </platform>
 
 </plugin>
