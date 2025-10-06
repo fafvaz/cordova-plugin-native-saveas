@@ -21,11 +21,7 @@
       </feature>
     </config-file>
 
-    <!-- Kotlin support -->
-    <preference name="GradlePluginKotlinEnabled" value="true" />
-    <preference name="GradlePluginKotlinVersion" value="1.7.21" />
-    
-    <!-- Coroutines dependency -->
+    <!-- Kotlin and Coroutines dependencies -->
     <framework src="src/android/build.gradle" custom="true" type="gradleReference" />
     
     <source-file src="src/android/NativeSaveAs.kt" target-dir="src/com/outsystems/nativesaveas" />
@@ -38,9 +34,6 @@
         <param name="ios-package" value="NativeSaveAs" />
       </feature>
     </config-file>
-
-    <!-- iOS 11+ required for UIDocumentPickerViewController export mode -->
-    <preference name="deployment-target" value="11.0" />
     
     <source-file src="src/ios/NativeSaveAs.swift" />
     
