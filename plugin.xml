@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<plugin id="cordova-plugin-native-saveas" version="1.0.0" xmlns="http://apache.org/cordova/ns/plugins" xmlns:android="http://schemas.android.com/apk/res/android">
-    <name>Native SaveAs</name>
-    <description>Show native save dialog for Android and iOS</description>
-    <license>MIT</license>
-    <keywords>save, native, dialog, file</keywords>
+<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
+        id="cordova-plugin-native-saveas"
+        version="1.0.0">
 
+    <name>NativeSaveAs</name>
     <js-module src="www/NativeSaveAs.js" name="NativeSaveAs">
         <clobbers target="cordova.plugins.NativeSaveAs" />
     </js-module>
 
     <platform name="android">
-        <config-file target="res/xml/config.xml" parent="/*">
+        <config-file target="config.xml" parent="/*">
             <feature name="NativeSaveAs">
                 <param name="android-package" value="com.outsystems.nativesaveas.NativeSaveAs" />
             </feature>
         </config-file>
-        <source-file src="src/android/com/outsystems/nativesaveas/NativeSaveAs.kt" target-dir="src/com/outsystems/nativesaveas" />
-        <framework src="src/android/build.gradle" custom="true" type="gradleReference" />
+
+        <source-file src="src/android/com/outsystems/nativesaveas/NativeSaveAs.kt"
+                     target-dir="src/com/outsystems/nativesaveas" />
     </platform>
 
     <platform name="ios">
@@ -26,6 +26,5 @@
             </feature>
         </config-file>
         <source-file src="src/ios/NativeSaveAs.swift" />
-        <dependency id="cordova-plugin-add-swift-support" version="2.0.2" />
     </platform>
 </plugin>
