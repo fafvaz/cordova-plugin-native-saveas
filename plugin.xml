@@ -1,30 +1,44 @@
-<?xml version="1.0" encoding="utf-8"?>
-<plugin xmlns="http://apache.org/cordova/ns/plugins/1.0"
-        id="cordova-plugin-native-saveas"
-        version="1.0.0">
+<?xml version='1.0' encoding='utf-8'?>
+<plugin id="cordova-plugin-native-saveas"
+        version="1.0.0"
+        xmlns="http://apache.org/cordova/ns/plugins"
+        xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <name>NativeSaveAs</name>
-    <js-module src="www/NativeSaveAs.js" name="NativeSaveAs">
-        <clobbers target="cordova.plugins.NativeSaveAs" />
-    </js-module>
+  <name>Native SaveAs</name>
+  <description>Show native save dialog for Android and iOS</description>
+  <license>MIT</license>
+  <keywords>save, native, dialog, file</keywords>
 
-    <platform name="android">
-        <config-file target="config.xml" parent="/*">
-            <feature name="NativeSaveAs">
-                <param name="android-package" value="com.outsystems.nativesaveas.NativeSaveAs" />
-            </feature>
-        </config-file>
+  <js-module src="www/NativeSaveAs.js" name="NativeSaveAs">
+    <clobbers target="cordova.plugins.NativeSaveAs" />
+  </js-module>
 
-        <source-file src="src/android/com/outsystems/nativesaveas/NativeSaveAs.kt"
-                     target-dir="src/com/outsystems/nativesaveas" />
-    </platform>
+  <!-- Android -->
+  <platform name="android">
+    <config-file target="res/xml/config.xml" parent="/*">
+      <feature name="NativeSaveAs">
+        <param name="android-package" value="com.outsystems.nativesaveas.NativeSaveAs" />
+      </feature>
+    </config-file>
 
-    <platform name="ios">
-        <config-file target="config.xml" parent="/*">
-            <feature name="NativeSaveAs">
-                <param name="ios-package" value="NativeSaveAs" />
-            </feature>
-        </config-file>
-        <source-file src="src/ios/NativeSaveAs.swift" />
-    </platform>
+    <!-- Apply Kotlin plugin and dependencies -->
+    <framework src="src/android/nativesaveas.gradle" custom="true" type="gradleReference" />
+    
+    <source-file src="src/android/NativeSaveAs.kt" target-dir="src/com/outsystems/nativesaveas" />
+  </platform>
+
+  <!-- iOS -->
+  <platform name="ios">
+    <config-file target="config.xml" parent="/*">
+      <feature name="NativeSaveAs">
+        <param name="ios-package" value="NativeSaveAs" />
+      </feature>
+    </config-file>
+
+    <source-file src="src/ios/NativeSaveAs.swift" />
+    
+    <!-- Swift support -->
+    <dependency id="cordova-plugin-add-swift-support" version="2.0.2" />
+  </platform>
+
 </plugin>
