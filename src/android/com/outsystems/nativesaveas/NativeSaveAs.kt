@@ -1,12 +1,8 @@
 package com.outsystems.nativesaveas
 
 import android.app.Activity
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -45,7 +41,7 @@ class NativeSaveAs : CordovaPlugin() {
                 try {
                     withContext(Dispatchers.IO) {
                         val cacheDir = cordova.activity.cacheDir
-                        val tmpName = "nativesaveas_${UUID.randomUUID()}_$name"
+                        val tmpName = "nativesaveas_${'$'}{UUID.randomUUID()}_${'$'}name"
                         val tmp = File(cacheDir, tmpName)
                         val data = Base64.decode(base64, Base64.DEFAULT)
                         FileOutputStream(tmp).use { it.write(data) }
@@ -55,19 +51,18 @@ class NativeSaveAs : CordovaPlugin() {
                     withContext(Dispatchers.Main) {
                         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                             addCategory(Intent.CATEGORY_OPENABLE)
-                            type = this@NativeSaveAs.mimeType ?: "application/octet-stream"
+                            type = this@NativeSaveAs.mimeType
                             putExtra(Intent.EXTRA_TITLE, name)
                         }
                         cordova.setActivityResultCallback(this@NativeSaveAs)
                         cordova.activity.startActivityForResult(intent, CREATE_FILE_REQUEST)
-
-                        val pr = PluginResult(PluginResult.Status.NO_RESULT)
-                        pr.keepCallback = true
-                        callbackContext?.sendPluginResult(pr)
                     }
 
+                    val pr = PluginResult(PluginResult.Status.NO_RESULT)
+                    pr.keepCallback = true
+                    callbackContext?.sendPluginResult(pr)
                 } catch (e: Exception) {
-                    callbackContext?.error("Error preparing file: ${e.message}")
+                    callbackContext?.error("Error preparing file: ${'$'}{e.message}")
                 }
             }
             return true
@@ -82,42 +77,27 @@ class NativeSaveAs : CordovaPlugin() {
                 scope.launch {
                     try {
                         if (uri != null && tempFilePath != null) {
-                            val activity = cordova.activity
                             val tmpFile = File(tempFilePath)
-
-                            createNotificationChannel(activity)
-                            val notificationManager = NotificationManagerCompat.from(activity)
-                            val notificationBuilder = NotificationCompat.Builder(activity, CHANNEL_ID)
+                            val notificationManager = NotificationManagerCompat.from(cordova.activity)
+                            val notificationBuilder = NotificationCompat.Builder(cordova.activity, CHANNEL_ID)
                                 .setSmallIcon(android.R.drawable.stat_sys_download)
                                 .setContentTitle("Saving file")
-                                .setContentText("Please wait...")
-                                .setPriority(NotificationCompat.PRIORITY_LOW)
                                 .setOngoing(true)
-                                .setProgress(100, 0, false)
+                                .setProgress(100, 0, true)
                             notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
 
                             withContext(Dispatchers.IO) {
-                                val totalBytes = tmpFile.length()
-                                val out: OutputStream? = activity.contentResolver.openOutputStream(uri)
+                                val out: OutputStream? = cordova.activity.contentResolver.openOutputStream(uri)
                                 val input = FileInputStream(tmpFile)
-
                                 out?.use { outputStream ->
                                     input.use { inputStream ->
-                                        val buffer = ByteArray(16384)
+                                        val buffer = ByteArray(16 * 1024)
                                         var read: Int
-                                        var written = 0L
                                         while (inputStream.read(buffer).also { read = it } > 0) {
                                             outputStream.write(buffer, 0, read)
-                                            written += read
-                                            val percent = ((written * 100L) / totalBytes).toInt()
-                                            withContext(Dispatchers.Main) {
-                                                notificationBuilder.setProgress(100, percent, false)
-                                                notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
-                                            }
                                         }
                                     }
                                 }
-
                                 tmpFile.delete()
                             }
 
@@ -126,15 +106,14 @@ class NativeSaveAs : CordovaPlugin() {
                                 callback?.success(uri.toString())
                                 callback = null
                             }
-
                         } else {
-                            callback?.error("No uri or temp file")
+                            callback?.error("No URI or temp file")
                             callback = null
                         }
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
                             NotificationManagerCompat.from(cordova.activity).cancel(NOTIFICATION_ID)
-                            callback?.error("Error saving file: ${e.message}")
+                            callback?.error("Error saving file: ${'$'}{e.message}")
                             callback = null
                         }
                     }
@@ -143,18 +122,6 @@ class NativeSaveAs : CordovaPlugin() {
                 callback?.error("User cancelled")
                 callback = null
             }
-        }
-    }
-
-    private fun createNotificationChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = "File Operations"
-            val descriptionText = "Shows progress of file save operations"
-            val importance = NotificationManager.IMPORTANCE_LOW
-            val channel = NotificationChannel(CHANNEL_ID, name, importance)
-            channel.description = descriptionText
-            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
         }
     }
 

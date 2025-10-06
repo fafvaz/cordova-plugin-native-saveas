@@ -10,7 +10,7 @@ import MobileCoreServices
     @objc(saveBase64:)
     func saveBase64(command: CDVInvokedUrlCommand) {
         self.callbackId = command.callbackId
-        
+
         guard let base64 = command.argument(at: 0) as? String,
               let fileName = command.argument(at: 1) as? String,
               let mimeType = command.argument(at: 2) as? String else {
@@ -22,7 +22,7 @@ import MobileCoreServices
         // Decode base64 and write temp file with progress UI
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            
+
             guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
                 let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "Base64 decode failed")
                 self.commandDelegate.send(result, callbackId: self.callbackId)
@@ -44,7 +44,7 @@ import MobileCoreServices
                 progressView.progress = 0.0
                 progressView.progressTintColor = .systemBlue
                 alert.view.addSubview(progressView)
-                
+
                 if let topVC = self.topViewController() {
                     topVC.present(alert, animated: true, completion: nil)
                 }
@@ -56,7 +56,7 @@ import MobileCoreServices
                         guard let fileHandle = FileHandle(forWritingAtPath: tmpFile.path) else {
                             throw NSError(domain: "NativeSaveAs", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not create file handle"])
                         }
-                        
+
                         var offset = 0
                         while offset < total {
                             let end = min(offset + chunkSize, total)
@@ -64,13 +64,13 @@ import MobileCoreServices
                             fileHandle.seekToEndOfFile()
                             fileHandle.write(chunk)
                             offset = end
-                            
+
                             let progress = Float(offset) / Float(total)
                             DispatchQueue.main.async {
                                 progressView.progress = progress
                             }
                         }
-                        
+
                         fileHandle.closeFile()
 
                         // Dismiss progress alert and present document picker
@@ -80,7 +80,7 @@ import MobileCoreServices
                                 let picker = UIDocumentPickerViewController(url: tmpFile, in: .exportToService)
                                 picker.modalPresentationStyle = .formSheet
                                 picker.delegate = self
-                                
+
                                 if let topVC = self.topViewController() {
                                     topVC.present(picker, animated: true, completion: nil)
                                 }
@@ -128,7 +128,7 @@ extension NativeSaveAs: UIDocumentPickerDelegate {
             let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "No URL returned")
             self.commandDelegate.send(result, callbackId: self.callbackId)
         }
-        
+
         // Clean up temp file
         if let tmp = self.tempUrl {
             try? FileManager.default.removeItem(at: tmp)
@@ -139,7 +139,7 @@ extension NativeSaveAs: UIDocumentPickerDelegate {
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "User cancelled")
         self.commandDelegate.send(result, callbackId: self.callbackId)
-        
+
         if let tmp = self.tempUrl {
             try? FileManager.default.removeItem(at: tmp)
             self.tempUrl = nil
