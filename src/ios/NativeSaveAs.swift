@@ -33,7 +33,7 @@ import MobileCoreServices
             let tmpFile = tmpDir.appendingPathComponent("nativesaveas_\(UUID().uuidString)_\(fileName)")
 
             let total = data.count
-            let chunkSize = 128 * 1024 // Increased to 128KB for better performance
+            let chunkSize = 128 * 1024 // 128KB per chunk
 
             // Create progress view on main thread
             DispatchQueue.main.async {
@@ -45,18 +45,14 @@ import MobileCoreServices
                 progressView.progressTintColor = .systemBlue
                 alert.view.addSubview(progressView)
                 
-                if let rootVC = UIApplication.shared.keyWindow?.rootViewController {
-                    rootVC.present(alert, animated: true, completion: nil)
-                } else if let topVC = self.viewController {
+                if let topVC = self.topViewController() {
                     topVC.present(alert, animated: true, completion: nil)
                 }
 
                 // Write data in background while updating progress
                 DispatchQueue.global(qos: .userInitiated).async {
                     do {
-                        // Create file directly with FileManager (more efficient)
                         FileManager.default.createFile(atPath: tmpFile.path, contents: nil, attributes: nil)
-                        
                         guard let fileHandle = FileHandle(forWritingAtPath: tmpFile.path) else {
                             throw NSError(domain: "NativeSaveAs", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not create file handle"])
                         }
@@ -85,7 +81,7 @@ import MobileCoreServices
                                 picker.modalPresentationStyle = .formSheet
                                 picker.delegate = self
                                 
-                                if let topVC = self.viewController {
+                                if let topVC = self.topViewController() {
                                     topVC.present(picker, animated: true, completion: nil)
                                 }
                             }
@@ -102,8 +98,27 @@ import MobileCoreServices
             }
         }
     }
+
+    // MARK: - Helper to get top view controller
+    private func topViewController(base: UIViewController? = UIApplication.shared.connectedScenes
+                                    .compactMap { ($0 as? UIWindowScene)?.windows.first { $0.isKeyWindow } }
+                                    .first?.rootViewController) -> UIViewController? {
+        if let nav = base as? UINavigationController {
+            return topViewController(base: nav.visibleViewController)
+        }
+        if let tab = base as? UITabBarController {
+            if let selected = tab.selectedViewController {
+                return topViewController(base: selected)
+            }
+        }
+        if let presented = base?.presentedViewController {
+            return topViewController(base: presented)
+        }
+        return base
+    }
 }
 
+// MARK: - UIDocumentPickerDelegate
 extension NativeSaveAs: UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         if let dest = urls.first {
@@ -125,7 +140,6 @@ extension NativeSaveAs: UIDocumentPickerDelegate {
         let result = CDVPluginResult(status: CDVCommandStatus_ERROR, messageAs: "User cancelled")
         self.commandDelegate.send(result, callbackId: self.callbackId)
         
-        // Clean up temp file
         if let tmp = self.tempUrl {
             try? FileManager.default.removeItem(at: tmp)
             self.tempUrl = nil
