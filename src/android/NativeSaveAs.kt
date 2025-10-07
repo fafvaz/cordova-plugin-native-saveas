@@ -145,30 +145,43 @@ class NativeSaveAs : CordovaPlugin() {
             }
 
             var notificationManager: NotificationManagerCompat? = null
+            var notificationsEnabled = false
             
             try {
                 // Create notification channel
                 createNotificationChannel(activity)
                 
-                // Show notification
+                // Show notification (check if permission granted)
                 notificationManager = NotificationManagerCompat.from(activity)
+                
+                // Check if notifications are enabled
+                notificationsEnabled = notificationManager.areNotificationsEnabled()
+                
                 val notificationBuilder = NotificationCompat.Builder(activity, CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.stat_sys_download)
                     .setContentTitle("Saving file")
-                    .setContentText("Please wait...")
+                    .setContentText("0%")
                     .setPriority(NotificationCompat.PRIORITY_LOW)
                     .setOngoing(true)
                     .setProgress(100, 0, false)
+                    .setOnlyAlertOnce(true)
                 
                 withContext(Dispatchers.Main) {
-                    notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
+                    if (notificationsEnabled) {
+                        try {
+                            notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
+                        } catch (e: SecurityException) {
+                            // Permission denied - continue without notification
+                            notificationsEnabled = false
+                        }
+                    }
                 }
 
                 // Copy file with progress tracking
                 withContext(Dispatchers.IO) {
                     val totalBytes = tmpFile.length()
                     var written = 0L
-                    var lastUpdatePercent = 0
+                    var lastUpdatePercent = -1
                     
                     activity.contentResolver.openOutputStream(destinationUri)?.use { out ->
                         FileInputStream(tmpFile).use { input ->
@@ -181,17 +194,23 @@ class NativeSaveAs : CordovaPlugin() {
                                 
                                 // Update progress (only when percent changes to reduce UI updates)
                                 val currentPercent = ((written * 100L) / totalBytes).toInt()
-                                if (currentPercent > lastUpdatePercent) {
+                                if (currentPercent != lastUpdatePercent) {
                                     lastUpdatePercent = currentPercent
                                     
                                     withContext(Dispatchers.Main) {
-                                        notificationBuilder
-                                            .setProgress(100, currentPercent, false)
-                                            .setContentText("$currentPercent%")
-                                        notificationManager.notify(
-                                            NOTIFICATION_ID, 
-                                            notificationBuilder.build()
-                                        )
+                                        if (notificationsEnabled) {
+                                            try {
+                                                notificationBuilder
+                                                    .setProgress(100, currentPercent, false)
+                                                    .setContentText("$currentPercent%")
+                                                notificationManager?.notify(
+                                                    NOTIFICATION_ID, 
+                                                    notificationBuilder.build()
+                                                )
+                                            } catch (e: Exception) {
+                                                // Ignore notification update errors
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -204,7 +223,13 @@ class NativeSaveAs : CordovaPlugin() {
 
                 // Success - dismiss notification and return result
                 withContext(Dispatchers.Main) {
-                    notificationManager.cancel(NOTIFICATION_ID)
+                    if (notificationsEnabled) {
+                        try {
+                            notificationManager?.cancel(NOTIFICATION_ID)
+                        } catch (e: Exception) {
+                            // Ignore
+                        }
+                    }
                     callback?.success(destinationUri.toString())
                     callback = null
                     tempFilePath = null
@@ -215,7 +240,13 @@ class NativeSaveAs : CordovaPlugin() {
                 tmpFile.delete()
                 
                 withContext(Dispatchers.Main) {
-                    notificationManager?.cancel(NOTIFICATION_ID)
+                    if (notificationsEnabled) {
+                        try {
+                            notificationManager?.cancel(NOTIFICATION_ID)
+                        } catch (ex: Exception) {
+                            // Ignore
+                        }
+                    }
                     callback?.error("Error saving file: ${e.message}")
                     callback = null
                     tempFilePath = null
