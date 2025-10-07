@@ -19,6 +19,9 @@
       <feature name="NativeSaveAs">
         <param name="android-package" value="com.outsystems.nativesaveas.NativeSaveAs" />
       </feature>
+      <preference name="GradlePluginKotlinEnabled" value="true" />
+      <preference name="GradlePluginKotlinCodeStyle" value="official" />
+      <preference name="AndroidXEnabled" value="true"/>
     </config-file>
     <config-file target="AndroidManifest.xml" parent="/manifest">
       <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
