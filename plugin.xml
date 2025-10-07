@@ -26,7 +26,7 @@
       <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     </config-file>
     <framework src="src/android/nativesaveas.gradle" custom="true" type="gradleReference" />
-    <source-file src="src/android/NativeSaveAs.kt" target-dir="src/com/outsystems/nativesaveas" />
+    <source-file src="src/android/NativeSaveAs.kt" target-dir="app/src/main/kotlin/com/outsystems/plugins/nativesaveas" />
   </platform>
 
   <!-- iOS -->
