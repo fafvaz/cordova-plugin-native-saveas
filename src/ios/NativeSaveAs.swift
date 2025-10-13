@@ -43,14 +43,46 @@ class NativeSaveAs: CDVPlugin {
                 return
             }
 
+            // Generate versioned filename to avoid conflicts in temp directory
             let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            let tmpFile = tmpDir.appendingPathComponent("nativesaveas_\(UUID().uuidString)_\(fileName)")
+            let versionedFileName = self.getVersionedFilename(fileName, in: tmpDir)
+            let tmpFile = tmpDir.appendingPathComponent(versionedFileName)
 
             // Show progress UI and write file
             DispatchQueue.main.async {
                 self.showProgressAndWriteFile(data: data, to: tmpFile, fileName: fileName, mimeType: mimeType)
             }
         }
+    }
+    
+    /// Generate a versioned filename if original exists
+    /// Example: "file.pdf" -> "file(1).pdf" -> "file(2).pdf"
+    private func getVersionedFilename(_ filename: String, in directory: URL) -> String {
+        let fileURL = URL(fileURLWithPath: filename)
+        let nameWithoutExtension = fileURL.deletingPathExtension().lastPathComponent
+        let fileExtension = fileURL.pathExtension
+        
+        var candidateFilename = filename
+        var version = 1
+        
+        // Check if file exists and increment version
+        while FileManager.default.fileExists(atPath: directory.appendingPathComponent(candidateFilename).path) {
+            if fileExtension.isEmpty {
+                candidateFilename = "\(nameWithoutExtension)(\(version))"
+            } else {
+                candidateFilename = "\(nameWithoutExtension)(\(version)).\(fileExtension)"
+            }
+            version += 1
+            
+            // Safety limit to prevent infinite loop
+            if version > 999 {
+                // Use UUID as last resort
+                candidateFilename = "\(UUID().uuidString)_\(filename)"
+                break
+            }
+        }
+        
+        return candidateFilename
     }
     
     private func showProgressAndWriteFile(data: Data, to tmpFile: URL, fileName: String, mimeType: String) {
@@ -149,7 +181,10 @@ class NativeSaveAs: CDVPlugin {
     
     private func presentDocumentPicker(for url: URL, mimeType: String) {
         let uti = mimeTypeToUTI(mimeType) ?? (kUTTypeData as String)
-        let picker = UIDocumentPickerViewController(url: url, in: .exportToService)
+        
+        // CRITICAL: Use .moveToService instead of .exportToService
+        // This moves the file and lets iOS handle name conflicts automatically
+        let picker = UIDocumentPickerViewController(url: url, in: .moveToService)
         picker.modalPresentationStyle = .formSheet
         picker.delegate = self
         picker.shouldShowFileExtensions = true
@@ -179,10 +214,11 @@ class NativeSaveAs: CDVPlugin {
     }
     
     private func cleanupTempFile() {
-        if let tmp = self.tempUrl {
+        // Only clean up if the file still exists (might have been moved by picker)
+        if let tmp = self.tempUrl, FileManager.default.fileExists(atPath: tmp.path) {
             try? FileManager.default.removeItem(at: tmp)
-            self.tempUrl = nil
         }
+        self.tempUrl = nil
     }
 }
 
@@ -200,24 +236,16 @@ extension NativeSaveAs: UIDocumentPickerDelegate {
             return
         }
         
-        // Ensure file is copied to the selected location
-        do {
-            if FileManager.default.fileExists(atPath: tempUrl?.path ?? "") {
-                try FileManager.default.copyItem(at: tempUrl!, to: dest)
-            }
-            let result = CDVPluginResult(
-                status: CDVCommandStatus_OK,
-                messageAs: dest.absoluteString
-            )
-            self.commandDelegate.send(result, callbackId: self.callbackId)
-        } catch {
-            let result = CDVPluginResult(
-                status: CDVCommandStatus_ERROR,
-                messageAs: "Failed to save file: \(error.localizedDescription)"
-            )
-            self.commandDelegate.send(result, callbackId: self.callbackId)
-        }
+        // With .moveToService mode, iOS handles the file move and conflict resolution
+        // The file has already been moved to the destination
+        // Just return success with the destination URI
+        let result = CDVPluginResult(
+            status: CDVCommandStatus_OK,
+            messageAs: dest.absoluteString
+        )
+        self.commandDelegate.send(result, callbackId: self.callbackId)
         
+        // Clean up any remaining temp files
         self.cleanupTempFile()
         self.callbackId = nil
     }
