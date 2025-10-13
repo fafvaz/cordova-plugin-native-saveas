@@ -1,15 +1,16 @@
 package com.outsystems.nativesaveas
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -17,6 +18,7 @@ import org.apache.cordova.CallbackContext
 import org.apache.cordova.CordovaPlugin
 import org.apache.cordova.PluginResult
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -78,7 +80,6 @@ class NativeSaveAs : CordovaPlugin() {
                 tempFilePath = tmpPath
 
                 withContext(Dispatchers.Main) {
-                    // Prefer folder-picker to avoid provider auto-suffixing like "name (1).ext" AFTER the extension.
                     launchFolderPicker()
                 }
 
@@ -128,7 +129,6 @@ class NativeSaveAs : CordovaPlugin() {
             cordova.setActivityResultCallback(this@NativeSaveAs)
             cordova.activity.startActivityForResult(intent, PICK_FOLDER_REQUEST)
         } catch (e: Exception) {
-            // fallback to create-document if folder picker not available
             launchSaveDialogFallback(safeFileName ?: originalFileName ?: "file.bin")
         }
     }
@@ -189,15 +189,12 @@ class NativeSaveAs : CordovaPlugin() {
         scope.launch {
             val activity = cordova.activity
 
-            // try to persist permissions for the tree
             try {
                 val takeFlags = (intent.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
                 activity.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
-            } catch (_: Exception) {
-            }
+            } catch (_: Exception) {}
 
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
-                // fallback to create-document
                 withContext(Dispatchers.Main) {
                     launchSaveDialogFallback(safeFileName ?: originalFileName ?: "file.bin")
                 }
@@ -211,29 +208,27 @@ class NativeSaveAs : CordovaPlugin() {
                 val desired = safeFileName ?: originalFileName ?: "file.bin"
 
                 try {
-                    // generate a free candidate using "name (n).ext" style
                     val candidate = generateNextFreeName(resolver, parentDocUri, desired)
 
-                    // If candidate equals desired, no conflict — create directly
-                    val nameToCreate = candidate
-
-                    // Attempt to create the document with the chosen name
                     var finalDocUri: Uri? = null
                     try {
-                        finalDocUri = DocumentsContract.createDocument(resolver, parentDocUri, mimeType ?: "application/octet-stream", nameToCreate)
+                        finalDocUri = DocumentsContract.createDocument(
+                            resolver,
+                            parentDocUri,
+                            mimeType ?: "application/octet-stream",
+                            candidate
+                        )
                     } catch (ex: Exception) {
                         finalDocUri = null
                     }
 
                     if (finalDocUri == null) {
-                        // provider didn't allow createDocument — fallback to ACTION_CREATE_DOCUMENT
                         withContext(Dispatchers.Main) {
-                            launchSaveDialogFallback(nameToCreate)
+                            launchSaveDialogFallback(candidate)
                         }
                         return@withContext
                     }
 
-                    // write content
                     withContext(Dispatchers.Main) {
                         copyFileWithProgress(finalDocUri)
                     }
@@ -258,62 +253,50 @@ class NativeSaveAs : CordovaPlugin() {
         }
     }
 
-    /** Find an existing document with exact displayName inside parentDocUri, or null if not found. */
+    /** Find an existing document by display name */
     private fun findDocumentInFolder(resolver: ContentResolver, parentDocumentUri: Uri, displayName: String): Uri? {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 DocumentsContract.findDocument(resolver, parentDocumentUri, displayName)
-            } else {
-                null
-            }
+            } else null
         } catch (ex: Exception) {
             null
         }
     }
 
-    /**
-     * Generate next free name like "report (1).pdf" using DocumentsContract.findDocument to check.
-     * Will attempt up to maxAttempts; on exhaustion it appends a timestamp.
-     */
+    /** Generate next free name like "report (1).pdf" */
     private fun generateNextFreeName(resolver: ContentResolver, parentDocUri: Uri, desiredName: String, maxAttempts: Int = 100): String {
         val (base, ext) = splitNameAndExt(desiredName)
+        if (findDocumentInFolder(resolver, parentDocUri, desiredName) == null) return desiredName
 
-        // If original doesn't exist, return it
-        if (findDocumentInFolder(resolver, parentDocUri, desiredName) == null) {
-            return desiredName
-        }
-
-        // Try suffixes
         for (i in 1..maxAttempts) {
             val candidate = "$base ($i)$ext"
-            if (findDocumentInFolder(resolver, parentDocUri, candidate) == null) {
-                return candidate
+            if (findDocumentInFolder(resolver, parentDocUri, candidate) == null) return candidate
+        }
+        return "$base ${System.currentTimeMillis()}$ext"
+    }
+
+    /** Query display name for a given URI */
+    private fun queryDisplayName(resolver: ContentResolver, uri: Uri): String? {
+        var name: String? = null
+        val projection = arrayOf(OpenableColumns.DISPLAY_NAME)
+        resolver.query(uri, projection, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) name = cursor.getString(idx)
             }
         }
-
-        // Fallback: timestamp
-        return "$base ${System.currentTimeMillis()}$ext"
+        return name
     }
 
     private fun copyFileWithProgress(destinationUri: Uri) {
         scope.launch {
             val activity = cordova.activity
-            val tmpPath = tempFilePath
-
-            if (tmpPath == null) {
-                withContext(Dispatchers.Main) {
-                    callback?.error("No temp file path")
-                    callback = null
-                }
-                return@launch
-            }
-
+            val tmpPath = tempFilePath ?: return@launch
             val tmpFile = File(tmpPath)
             if (!tmpFile.exists()) {
-                withContext(Dispatchers.Main) {
-                    callback?.error("Temp file does not exist")
-                    callback = null
-                }
+                callback?.error("Temp file missing")
+                callback = null
                 return@launch
             }
 
@@ -367,17 +350,15 @@ class NativeSaveAs : CordovaPlugin() {
                                                     .setProgress(100, currentPercent, false)
                                                     .setContentText("$currentPercent%")
                                                 notificationManager?.notify(NOTIFICATION_ID, notificationBuilder.build())
-                                            } catch (_: Exception) {
-                                            }
+                                            } catch (_: Exception) {}
                                         }
                                     }
                                 }
                             }
                             out.flush()
                         }
-                    } ?: throw Exception("Could not open output stream for URI: $destinationUri")
+                    } ?: throw Exception("Cannot open output stream for $destinationUri")
 
-                    // Remove temp file after copy
                     tmpFile.delete()
                 }
 
@@ -385,22 +366,23 @@ class NativeSaveAs : CordovaPlugin() {
                     if (notificationsEnabled) {
                         try {
                             notificationManager?.cancel(NOTIFICATION_ID)
-                        } catch (_: Exception) {
-                        }
+                        } catch (_: Exception) {}
                     }
-                    callback?.success(destinationUri.toString())
+
+                    val displayName = try { queryDisplayName(activity.contentResolver, destinationUri) } catch (_: Exception) { null }
+                    val result = JSONObject()
+                    result.put("uri", destinationUri.toString())
+                    result.put("name", displayName ?: safeFileName ?: originalFileName ?: "file")
+
+                    callback?.success(result)
                     callback = null
                     tempFilePath = null
                 }
+
             } catch (e: Exception) {
                 tmpFile.delete()
                 withContext(Dispatchers.Main) {
-                    if (notificationsEnabled) {
-                        try {
-                            notificationManager?.cancel(NOTIFICATION_ID)
-                        } catch (_: Exception) {
-                        }
-                    }
+                    notificationManager?.cancel(NOTIFICATION_ID)
                     callback?.error("Error saving file: ${e.message}")
                     callback = null
                     tempFilePath = null
@@ -410,26 +392,22 @@ class NativeSaveAs : CordovaPlugin() {
     }
 
     private fun cleanupTempFile() {
-        tempFilePath?.let { path ->
-            try {
-                File(path).delete()
-            } catch (_: Exception) {
-            }
-        }
+        tempFilePath?.let { path -> try { File(path).delete() } catch (_: Exception) {} }
         tempFilePath = null
     }
 
     private fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val name = "File Operations"
-            val description = "Shows progress of file save operations"
-            val importance = NotificationManager.IMPORTANCE_LOW
-            val channel = NotificationChannel(CHANNEL_ID, name, importance).apply {
-                this.description = description
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "File Operations",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shows progress of file save operations"
                 setShowBadge(false)
             }
-            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            notificationManager?.createNotificationChannel(channel)
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.createNotificationChannel(channel)
         }
     }
 
