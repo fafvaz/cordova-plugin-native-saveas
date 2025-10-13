@@ -3,10 +3,12 @@ package com.outsystems.nativesaveas
 import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -24,22 +26,20 @@ class NativeSaveAs : CordovaPlugin() {
 
     companion object {
         private const val CREATE_FILE_REQUEST = 2001
+        private const val PICK_FOLDER_REQUEST = 2002
         private const val CHANNEL_ID = "native_saveas_channel"
         private const val NOTIFICATION_ID = 1001
-        private const val BUFFER_SIZE = 32 * 1024 // 32KB buffer for optimal performance
+        private const val BUFFER_SIZE = 32 * 1024 // 32KB buffer
     }
 
     private var callback: CallbackContext? = null
     private var tempFilePath: String? = null
     private var mimeType: String? = null
     private var originalFileName: String? = null
+    private var safeFileName: String? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
-    override fun execute(
-        action: String?,
-        args: JSONArray?,
-        callbackContext: CallbackContext?
-    ): Boolean {
+    override fun execute(action: String?, args: JSONArray?, callbackContext: CallbackContext?): Boolean {
         if (action != "saveBase64") return false
 
         callback = callbackContext
@@ -53,13 +53,14 @@ class NativeSaveAs : CordovaPlugin() {
             return false
         }
 
+        safeFileName = ensureFilenameHasExtension(name, mimeType)
+
         scope.launch {
             try {
                 val tmpPath = withContext(Dispatchers.IO) {
                     val cacheDir = cordova.activity.cacheDir
-                    val tmpName = "nativesaveas_${UUID.randomUUID()}_$name"
+                    val tmpName = "nativesaveas_${UUID.randomUUID()}_$safeFileName"
                     val tmp = File(cacheDir, tmpName)
-
                     try {
                         val data = Base64.decode(base64, Base64.DEFAULT)
                         FileOutputStream(tmp).use { fos ->
@@ -76,13 +77,13 @@ class NativeSaveAs : CordovaPlugin() {
                 tempFilePath = tmpPath
 
                 withContext(Dispatchers.Main) {
-                    launchSaveDialog(name)
+                    // Start folder picker flow (preferred) to avoid duplicates
+                    launchFolderPicker()
                 }
 
                 val pr = PluginResult(PluginResult.Status.NO_RESULT)
                 pr.keepCallback = true
                 callbackContext?.sendPluginResult(pr)
-
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     callbackContext?.error("Error preparing file: ${e.message}")
@@ -93,25 +94,57 @@ class NativeSaveAs : CordovaPlugin() {
         return true
     }
 
-    /** Improved Save Dialog with correct extension & duplicate handling */
-    private fun launchSaveDialog(fileName: String) {
+    private fun ensureFilenameHasExtension(fileName: String, mimeType: String?): String {
+        val trimmed = fileName.trim()
+        if (trimmed.contains(".")) return trimmed
+        val ext = when (mimeType?.lowercase()) {
+            "application/pdf" -> ".pdf"
+            "text/plain" -> ".txt"
+            "image/jpeg" -> ".jpg"
+            "image/png" -> ".png"
+            "text/csv" -> ".csv"
+            "application/json" -> ".json"
+            "application/xml" -> ".xml"
+            "text/html" -> ".html"
+            "application/zip" -> ".zip"
+            "application/msword" -> ".doc"
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" -> ".docx"
+            "application/vnd.ms-excel" -> ".xls"
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" -> ".xlsx"
+            else -> ""
+        }
+        return if (ext.isNotEmpty()) trimmed + ext else trimmed
+    }
+
+    /** Start a folder picker so we can create inside that folder and check for duplicates. */
+    private fun launchFolderPicker() {
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                // Optional: allow creating new folders in picker UI
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    putExtra("android.content.extra.SHOW_ADVANCED", true)
+                }
+            }
+            cordova.setActivityResultCallback(this@NativeSaveAs)
+            cordova.activity.startActivityForResult(intent, PICK_FOLDER_REQUEST)
+        } catch (e: Exception) {
+            // If folder picker fails, fall back to ACTION_CREATE_DOCUMENT
+            launchSaveDialogFallback(safeFileName ?: originalFileName ?: "file.bin")
+        }
+    }
+
+    /** Fallback to original create-document flow (some devices/providers might only support this). */
+    private fun launchSaveDialogFallback(fileName: String) {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = this@NativeSaveAs.mimeType ?: "application/octet-stream"
-
-            // Use full file name, including extension (critical!)
             putExtra(Intent.EXTRA_TITLE, fileName)
-
-            // Allow user to overwrite or create new copies
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-
-            // Help show advanced storage locations
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 putExtra("android.content.extra.SHOW_ADVANCED", true)
             }
         }
-
         try {
             cordova.setActivityResultCallback(this@NativeSaveAs)
             cordova.activity.startActivityForResult(intent, CREATE_FILE_REQUEST)
@@ -123,15 +156,29 @@ class NativeSaveAs : CordovaPlugin() {
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, intent: Intent?) {
-        if (requestCode != CREATE_FILE_REQUEST) return
+        if (requestCode != CREATE_FILE_REQUEST && requestCode != PICK_FOLDER_REQUEST) return
 
         if (intent != null && resultCode == Activity.RESULT_OK) {
-            intent.data?.let { uri ->
-                copyFileWithProgress(uri)
-            } ?: run {
-                callback?.error("No destination URI received")
-                cleanupTempFile()
-                callback = null
+            when (requestCode) {
+                PICK_FOLDER_REQUEST -> {
+                    intent.data?.let { treeUri ->
+                        handleFolderPicked(treeUri, intent)
+                    } ?: run {
+                        callback?.error("No folder URI received")
+                        cleanupTempFile()
+                        callback = null
+                    }
+                }
+                CREATE_FILE_REQUEST -> {
+                    intent.data?.let { uri ->
+                        // fallback flow
+                        copyFileWithProgress(uri)
+                    } ?: run {
+                        callback?.error("No destination URI received")
+                        cleanupTempFile()
+                        callback = null
+                    }
+                }
             }
         } else {
             callback?.error("User cancelled")
@@ -140,6 +187,90 @@ class NativeSaveAs : CordovaPlugin() {
         }
     }
 
+    /** Handle folder selection: check for existing same-named file, delete if present, create new doc, write. */
+    private fun handleFolderPicked(treeUri: Uri, intent: Intent) {
+        scope.launch {
+            val activity = cordova.activity
+            try {
+                // Persist permissions to the tree so we can write
+                try {
+                    val takeFlags = (intent.flags
+                        and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
+                    activity.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
+                } catch (_: Exception) {
+                    // ignore if cannot persist
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    withContext(Dispatchers.IO) {
+                        val resolver = activity.contentResolver
+                        // Parent document uri for the tree
+                        val parentDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                        val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocId)
+
+                        var finalDocUri: Uri? = null
+
+                        try {
+                            // Try to find existing document with same display name
+                            val desired = safeFileName ?: originalFileName ?: "file.bin"
+                            val existing = try {
+                                DocumentsContract.findDocument(resolver, parentDocUri, desired)
+                            } catch (ex: Exception) {
+                                null
+                            }
+
+                            if (existing != null) {
+                                // Delete existing to force overwrite (may fail if provider disallows delete)
+                                try {
+                                    DocumentsContract.deleteDocument(resolver, existing)
+                                } catch (_: Exception) {
+                                    // If delete fails, fallback to createDocument which may create (1)
+                                }
+                            }
+
+                            // Create new document with exact name
+                            finalDocUri = try {
+                                DocumentsContract.createDocument(resolver, parentDocUri, mimeType
+                                    ?: "application/octet-stream", desired)
+                            } catch (ex: Exception) {
+                                null
+                            }
+
+                            // If createDocument failed, fallback to ACTION_CREATE_DOCUMENT (provider limitations)
+                            if (finalDocUri == null) {
+                                withContext(Dispatchers.Main) {
+                                    launchSaveDialogFallback(desired)
+                                }
+                                return@withContext
+                            }
+
+                            // Write file into finalDocUri
+                            copyFileWithProgress(finalDocUri)
+                        } catch (ex: Exception) {
+                            withContext(Dispatchers.Main) {
+                                callback?.error("Error during folder-save: ${ex.message}")
+                                cleanupTempFile()
+                                callback = null
+                            }
+                        }
+                    }
+                } else {
+                    // If API < 21, fallback to create-document
+                    withContext(Dispatchers.Main) {
+                        launchSaveDialogFallback(safeFileName ?: originalFileName ?: "file.bin")
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    callback?.error("Error handling folder pick: ${e.message}")
+                    cleanupTempFile()
+                    callback = null
+                }
+            }
+        }
+    }
+
+    /** Copy temp file to destinationUri with the same progress/notification code. */
     private fun copyFileWithProgress(destinationUri: Uri) {
         scope.launch {
             val activity = cordova.activity
@@ -167,7 +298,6 @@ class NativeSaveAs : CordovaPlugin() {
 
             try {
                 createNotificationChannel(activity)
-
                 notificationManager = NotificationManagerCompat.from(activity)
                 notificationsEnabled = notificationManager.areNotificationsEnabled()
 
@@ -190,7 +320,6 @@ class NativeSaveAs : CordovaPlugin() {
                     }
                 }
 
-                // File copy with progress updates
                 withContext(Dispatchers.IO) {
                     val totalBytes = tmpFile.length()
                     var written = 0L
@@ -227,10 +356,10 @@ class NativeSaveAs : CordovaPlugin() {
                         }
                     } ?: throw Exception("Could not open output stream for URI: $destinationUri")
 
+                    // Remove temp file after copy
                     tmpFile.delete()
                 }
 
-                // Complete
                 withContext(Dispatchers.Main) {
                     if (notificationsEnabled) {
                         try {
@@ -242,7 +371,6 @@ class NativeSaveAs : CordovaPlugin() {
                     callback = null
                     tempFilePath = null
                 }
-
             } catch (e: Exception) {
                 tmpFile.delete()
                 withContext(Dispatchers.Main) {
@@ -284,7 +412,6 @@ class NativeSaveAs : CordovaPlugin() {
         }
     }
 
-    /** Auto-detect MIME type based on file extension */
     private fun detectMimeType(fileName: String): String {
         val lower = fileName.lowercase()
         return when {
