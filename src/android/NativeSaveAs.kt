@@ -253,28 +253,54 @@ class NativeSaveAs : CordovaPlugin() {
         }
     }
 
-    /** Find an existing document by display name */
-    private fun findDocumentInFolder(resolver: ContentResolver, parentDocumentUri: Uri, displayName: String): Uri? {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                DocumentsContract.findDocument(resolver, parentDocumentUri, displayName)
-            } else null
-        } catch (ex: Exception) {
-            null
+    /** Find an existing document by display name (safe for all Android versions) */
+private fun findDocumentInFolder(resolver: ContentResolver, parentDocumentUri: Uri, displayName: String): Uri? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) return null
+    return try {
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+            parentDocumentUri,
+            DocumentsContract.getDocumentId(parentDocumentUri)
+        )
+        resolver.query(childrenUri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null
+        )?.use { cursor ->
+            val nameIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val idIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(nameIndex)
+                if (name == displayName) {
+                    val docId = cursor.getString(idIndex)
+                    return DocumentsContract.buildDocumentUriUsingTree(parentDocumentUri, docId)
+                }
+            }
         }
+        null
+    } catch (ex: Exception) {
+        null
+    }
+}
+
+/** Generate next free name like "report (1).pdf" */
+private fun generateNextFreeName(
+    resolver: ContentResolver,
+    parentDocUri: Uri,
+    desiredName: String,
+    maxAttempts: Int = 100
+): String {
+    val (base, ext) = splitNameAndExt(desiredName)
+
+    // If original doesn't exist, return it directly
+    if (findDocumentInFolder(resolver, parentDocUri, desiredName) == null) return desiredName
+
+    // Try numbered variants
+    for (i in 1..maxAttempts) {
+        val candidate = "$base ($i)$ext"
+        if (findDocumentInFolder(resolver, parentDocUri, candidate) == null) return candidate
     }
 
-    /** Generate next free name like "report (1).pdf" */
-    private fun generateNextFreeName(resolver: ContentResolver, parentDocUri: Uri, desiredName: String, maxAttempts: Int = 100): String {
-        val (base, ext) = splitNameAndExt(desiredName)
-        if (findDocumentInFolder(resolver, parentDocUri, desiredName) == null) return desiredName
-
-        for (i in 1..maxAttempts) {
-            val candidate = "$base ($i)$ext"
-            if (findDocumentInFolder(resolver, parentDocUri, candidate) == null) return candidate
-        }
-        return "$base ${System.currentTimeMillis()}$ext"
-    }
+    // Fallback: timestamp
+    return "$base ${System.currentTimeMillis()}$ext"
+}
 
     /** Query display name for a given URI */
     private fun queryDisplayName(resolver: ContentResolver, uri: Uri): String? {
