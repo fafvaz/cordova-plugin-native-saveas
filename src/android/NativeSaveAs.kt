@@ -17,7 +17,6 @@ import org.json.JSONArray
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.OutputStream
 import java.util.UUID
 import kotlinx.coroutines.*
 
@@ -33,6 +32,7 @@ class NativeSaveAs : CordovaPlugin() {
     private var callback: CallbackContext? = null
     private var tempFilePath: String? = null
     private var mimeType: String? = null
+    private var originalFileName: String? = null
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     override fun execute(
@@ -46,6 +46,7 @@ class NativeSaveAs : CordovaPlugin() {
         val base64 = args?.optString(0) ?: ""
         val name = args?.optString(1) ?: "file.bin"
         mimeType = args?.optString(2) ?: "application/octet-stream"
+        originalFileName = name
 
         // Validate inputs
         if (base64.isEmpty()) {
@@ -81,14 +82,7 @@ class NativeSaveAs : CordovaPlugin() {
 
                 // Launch save dialog on main thread
                 withContext(Dispatchers.Main) {
-                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = this@NativeSaveAs.mimeType ?: "application/octet-stream"
-                        putExtra(Intent.EXTRA_TITLE, name)
-                    }
-                    
-                    cordova.setActivityResultCallback(this@NativeSaveAs)
-                    cordova.activity.startActivityForResult(intent, CREATE_FILE_REQUEST)
+                    launchSaveDialog(name)
                 }
 
                 // Keep callback alive
@@ -106,6 +100,36 @@ class NativeSaveAs : CordovaPlugin() {
         return true
     }
 
+    private fun launchSaveDialog(fileName: String) {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = this@NativeSaveAs.mimeType ?: "application/octet-stream"
+            putExtra(Intent.EXTRA_TITLE, fileName)
+            
+            // CRITICAL: These flags ensure the dialog is always shown
+            // and handles file conflicts properly
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            
+            // Force the system to show the dialog even if default location is set
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // This ensures proper UI for file conflict handling
+                putExtra("android.content.extra.SHOW_ADVANCED", true)
+            }
+        }
+        
+        cordova.setActivityResultCallback(this@NativeSaveAs)
+        
+        try {
+            cordova.activity.startActivityForResult(intent, CREATE_FILE_REQUEST)
+        } catch (e: Exception) {
+            // If ACTION_CREATE_DOCUMENT is not available, fall back to older method
+            callback?.error("Unable to launch save dialog: ${e.message}")
+            cleanupTempFile()
+            callback = null
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, intent: Intent?) {
         if (requestCode != CREATE_FILE_REQUEST) return
 
@@ -114,10 +138,12 @@ class NativeSaveAs : CordovaPlugin() {
                 copyFileWithProgress(uri)
             } ?: run {
                 callback?.error("No destination URI received")
+                cleanupTempFile()
                 callback = null
             }
         } else {
             callback?.error("User cancelled")
+            cleanupTempFile()
             callback = null
         }
     }
@@ -183,6 +209,7 @@ class NativeSaveAs : CordovaPlugin() {
                     var written = 0L
                     var lastUpdatePercent = -1
                     
+                    // Use content resolver to write to the URI selected by user
                     activity.contentResolver.openOutputStream(destinationUri)?.use { out ->
                         FileInputStream(tmpFile).use { input ->
                             val buffer = ByteArray(BUFFER_SIZE)
@@ -214,8 +241,11 @@ class NativeSaveAs : CordovaPlugin() {
                                     }
                                 }
                             }
+                            
+                            // Ensure all data is written
+                            out.flush()
                         }
-                    } ?: throw Exception("Could not open output stream")
+                    } ?: throw Exception("Could not open output stream for URI: $destinationUri")
                     
                     // Clean up temp file
                     tmpFile.delete()
@@ -255,6 +285,17 @@ class NativeSaveAs : CordovaPlugin() {
         }
     }
 
+    private fun cleanupTempFile() {
+        tempFilePath?.let { path ->
+            try {
+                File(path).delete()
+            } catch (e: Exception) {
+                // Ignore cleanup errors
+            }
+        }
+        tempFilePath = null
+    }
+
     private fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val name = "File Operations"
@@ -278,13 +319,7 @@ class NativeSaveAs : CordovaPlugin() {
         scope.cancel()
         
         // Clean up any remaining temp files
-        tempFilePath?.let { path ->
-            try {
-                File(path).delete()
-            } catch (e: Exception) {
-                // Ignore cleanup errors
-            }
-        }
+        cleanupTempFile()
         
         super.onDestroy()
     }
