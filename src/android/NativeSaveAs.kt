@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -101,10 +102,14 @@ class NativeSaveAs : CordovaPlugin() {
     }
 
     private fun launchSaveDialog(fileName: String) {
+        // Separate base name and extension to handle duplicates properly
+        val dotIndex = fileName.lastIndexOf('.')
+        val baseName = if (dotIndex != -1 && dotIndex > 0) fileName.substring(0, dotIndex) else fileName
+
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = this@NativeSaveAs.mimeType ?: "application/octet-stream"
-            putExtra(Intent.EXTRA_TITLE, fileName)
+            putExtra(Intent.EXTRA_TITLE, baseName)
             
             // CRITICAL: These flags ensure the dialog is always shown
             // and handles file conflicts properly
@@ -133,14 +138,55 @@ class NativeSaveAs : CordovaPlugin() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, intent: Intent?) {
         if (requestCode != CREATE_FILE_REQUEST) return
 
-        if (intent != null && resultCode == Activity.RESULT_OK) {
-            intent.data?.let { uri ->
-                copyFileWithProgress(uri)
-            } ?: run {
-                callback?.error("No destination URI received")
-                cleanupTempFile()
-                callback = null
+        var uri: Uri? = intent?.data
+
+        if (uri != null && resultCode == Activity.RESULT_OK) {
+            // Query display name to check for duplicate suffix
+            val activity = cordova.activity
+            var cursor = activity.contentResolver.query(
+                uri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null,
+                null,
+                null
+            )
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    var displayName = it.getString(0)
+                    val original = originalFileName ?: return
+
+                    if (displayName != original) {
+                        // Check if it's appended with " (n)"
+                        val appendedPrefix = original.replace(".", " ") + " ("  // Rough check, but adjust for no-ext case
+                        if (displayName.contains(" (") && displayName.endsWith(")")) {
+                            try {
+                                // Extract suffix number
+                                val suffixStart = displayName.lastIndexOf(" (")
+                                if (suffixStart != -1) {
+                                    val nStr = displayName.substring(suffixStart + 2, displayName.length - 1)
+                                    val n = nStr.toInt()
+
+                                    // Compute new name without space: base(n).ext
+                                    val dot = original.lastIndexOf('.')
+                                    val base = if (dot > 0) original.substring(0, dot) else original
+                                    val ext = if (dot > 0) original.substring(dot) else ""
+                                    val newName = "$base($n)$ext"
+
+                                    // Attempt rename
+                                    val newUri = DocumentsContract.renameDocument(activity.contentResolver, uri, newName)
+                                    if (newUri != null) {
+                                        uri = newUri
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                // Ignore rename failure, proceed with original URI
+                            }
+                        }
+                    }
+                }
             }
+
+            copyFileWithProgress(uri)
         } else {
             callback?.error("User cancelled")
             cleanupTempFile()
