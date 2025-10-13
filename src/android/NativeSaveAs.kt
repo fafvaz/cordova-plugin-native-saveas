@@ -41,14 +41,13 @@ class NativeSaveAs : CordovaPlugin() {
         callbackContext: CallbackContext?
     ): Boolean {
         if (action != "saveBase64") return false
-        
+
         callback = callbackContext
         val base64 = args?.optString(0) ?: ""
         val name = args?.optString(1) ?: "file.bin"
-        mimeType = args?.optString(2) ?: "application/octet-stream"
+        mimeType = args?.optString(2) ?: detectMimeType(name)
         originalFileName = name
 
-        // Validate inputs
         if (base64.isEmpty()) {
             callbackContext?.error("Base64 string is empty")
             return false
@@ -56,78 +55,67 @@ class NativeSaveAs : CordovaPlugin() {
 
         scope.launch {
             try {
-                // Decode and write to temp file in background
                 val tmpPath = withContext(Dispatchers.IO) {
                     val cacheDir = cordova.activity.cacheDir
                     val tmpName = "nativesaveas_${UUID.randomUUID()}_$name"
                     val tmp = File(cacheDir, tmpName)
-                    
+
                     try {
                         val data = Base64.decode(base64, Base64.DEFAULT)
-                        
-                        // Write with buffering for better performance
                         FileOutputStream(tmp).use { fos ->
                             fos.write(data)
                             fos.flush()
                         }
-                        
                         tmp.absolutePath
                     } catch (e: Exception) {
-                        tmp.delete() // Clean up on error
+                        tmp.delete()
                         throw e
                     }
                 }
-                
+
                 tempFilePath = tmpPath
 
-                // Launch save dialog on main thread
                 withContext(Dispatchers.Main) {
                     launchSaveDialog(name)
                 }
 
-                // Keep callback alive
                 val pr = PluginResult(PluginResult.Status.NO_RESULT)
                 pr.keepCallback = true
                 callbackContext?.sendPluginResult(pr)
-                
+
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     callbackContext?.error("Error preparing file: ${e.message}")
                 }
             }
         }
-        
+
         return true
     }
 
+    /** Improved Save Dialog with correct extension & duplicate handling */
     private fun launchSaveDialog(fileName: String) {
-        // Separate base name and extension to handle duplicates properly
-        val dotIndex = fileName.lastIndexOf('.')
-        val baseName = if (dotIndex != -1 && dotIndex > 0) fileName.substring(0, dotIndex) else fileName
-
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = this@NativeSaveAs.mimeType ?: "application/octet-stream"
-            putExtra(Intent.EXTRA_TITLE, baseName)
-            
-            // CRITICAL: These flags ensure the dialog is always shown
-            // and handles file conflicts properly
+
+            // Use full file name, including extension (critical!)
+            putExtra(Intent.EXTRA_TITLE, fileName)
+
+            // Allow user to overwrite or create new copies
             addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            
-            // Force the system to show the dialog even if default location is set
+
+            // Help show advanced storage locations
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // This ensures proper UI for file conflict handling
                 putExtra("android.content.extra.SHOW_ADVANCED", true)
             }
         }
-        
-        cordova.setActivityResultCallback(this@NativeSaveAs)
-        
+
         try {
+            cordova.setActivityResultCallback(this@NativeSaveAs)
             cordova.activity.startActivityForResult(intent, CREATE_FILE_REQUEST)
         } catch (e: Exception) {
-            // If ACTION_CREATE_DOCUMENT is not available, fall back to older method
             callback?.error("Unable to launch save dialog: ${e.message}")
             cleanupTempFile()
             callback = null
@@ -156,7 +144,7 @@ class NativeSaveAs : CordovaPlugin() {
         scope.launch {
             val activity = cordova.activity
             val tmpPath = tempFilePath
-            
+
             if (tmpPath == null) {
                 withContext(Dispatchers.Main) {
                     callback?.error("No temp file path")
@@ -176,17 +164,13 @@ class NativeSaveAs : CordovaPlugin() {
 
             var notificationManager: NotificationManagerCompat? = null
             var notificationsEnabled = false
-            
+
             try {
-                // Create notification channel
                 createNotificationChannel(activity)
-                
-                // Show notification (check if permission granted)
+
                 notificationManager = NotificationManagerCompat.from(activity)
-                
-                // Check if notifications are enabled
                 notificationsEnabled = notificationManager.areNotificationsEnabled()
-                
+
                 val notificationBuilder = NotificationCompat.Builder(activity, CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.stat_sys_download)
                     .setContentTitle("Saving file")
@@ -195,39 +179,34 @@ class NativeSaveAs : CordovaPlugin() {
                     .setOngoing(true)
                     .setProgress(100, 0, false)
                     .setOnlyAlertOnce(true)
-                
+
                 withContext(Dispatchers.Main) {
                     if (notificationsEnabled) {
                         try {
                             notificationManager.notify(NOTIFICATION_ID, notificationBuilder.build())
                         } catch (e: SecurityException) {
-                            // Permission denied - continue without notification
                             notificationsEnabled = false
                         }
                     }
                 }
 
-                // Copy file with progress tracking
+                // File copy with progress updates
                 withContext(Dispatchers.IO) {
                     val totalBytes = tmpFile.length()
                     var written = 0L
                     var lastUpdatePercent = -1
-                    
-                    // Use content resolver to write to the URI selected by user
+
                     activity.contentResolver.openOutputStream(destinationUri)?.use { out ->
                         FileInputStream(tmpFile).use { input ->
                             val buffer = ByteArray(BUFFER_SIZE)
                             var read: Int
-                            
                             while (input.read(buffer).also { read = it } > 0) {
                                 out.write(buffer, 0, read)
                                 written += read
-                                
-                                // Update progress (only when percent changes to reduce UI updates)
+
                                 val currentPercent = ((written * 100L) / totalBytes).toInt()
                                 if (currentPercent != lastUpdatePercent) {
                                     lastUpdatePercent = currentPercent
-                                    
                                     withContext(Dispatchers.Main) {
                                         if (notificationsEnabled) {
                                             try {
@@ -235,50 +214,42 @@ class NativeSaveAs : CordovaPlugin() {
                                                     .setProgress(100, currentPercent, false)
                                                     .setContentText("$currentPercent%")
                                                 notificationManager?.notify(
-                                                    NOTIFICATION_ID, 
+                                                    NOTIFICATION_ID,
                                                     notificationBuilder.build()
                                                 )
-                                            } catch (e: Exception) {
-                                                // Ignore notification update errors
+                                            } catch (_: Exception) {
                                             }
                                         }
                                     }
                                 }
                             }
-                            
-                            // Ensure all data is written
                             out.flush()
                         }
                     } ?: throw Exception("Could not open output stream for URI: $destinationUri")
-                    
-                    // Clean up temp file
+
                     tmpFile.delete()
                 }
 
-                // Success - dismiss notification and return result
+                // Complete
                 withContext(Dispatchers.Main) {
                     if (notificationsEnabled) {
                         try {
                             notificationManager?.cancel(NOTIFICATION_ID)
-                        } catch (e: Exception) {
-                            // Ignore
+                        } catch (_: Exception) {
                         }
                     }
                     callback?.success(destinationUri.toString())
                     callback = null
                     tempFilePath = null
                 }
-                
+
             } catch (e: Exception) {
-                // Clean up on error
                 tmpFile.delete()
-                
                 withContext(Dispatchers.Main) {
                     if (notificationsEnabled) {
                         try {
                             notificationManager?.cancel(NOTIFICATION_ID)
-                        } catch (ex: Exception) {
-                            // Ignore
+                        } catch (_: Exception) {
                         }
                     }
                     callback?.error("Error saving file: ${e.message}")
@@ -293,8 +264,7 @@ class NativeSaveAs : CordovaPlugin() {
         tempFilePath?.let { path ->
             try {
                 File(path).delete()
-            } catch (e: Exception) {
-                // Ignore cleanup errors
+            } catch (_: Exception) {
             }
         }
         tempFilePath = null
@@ -309,27 +279,39 @@ class NativeSaveAs : CordovaPlugin() {
                 this.description = description
                 setShowBadge(false)
             }
-            
-            val notificationManager = context.getSystemService(
-                Context.NOTIFICATION_SERVICE
-            ) as? NotificationManager
-            
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             notificationManager?.createNotificationChannel(channel)
         }
     }
 
+    /** Auto-detect MIME type based on file extension */
+    private fun detectMimeType(fileName: String): String {
+        val lower = fileName.lowercase()
+        return when {
+            lower.endsWith(".pdf") -> "application/pdf"
+            lower.endsWith(".txt") -> "text/plain"
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> "image/jpeg"
+            lower.endsWith(".png") -> "image/png"
+            lower.endsWith(".csv") -> "text/csv"
+            lower.endsWith(".json") -> "application/json"
+            lower.endsWith(".xml") -> "application/xml"
+            lower.endsWith(".html") -> "text/html"
+            lower.endsWith(".zip") -> "application/zip"
+            lower.endsWith(".doc") -> "application/msword"
+            lower.endsWith(".docx") -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            lower.endsWith(".xls") -> "application/vnd.ms-excel"
+            lower.endsWith(".xlsx") -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            else -> "application/octet-stream"
+        }
+    }
+
     override fun onDestroy() {
-        // Cancel all coroutines and clean up
         scope.cancel()
-        
-        // Clean up any remaining temp files
         cleanupTempFile()
-        
         super.onDestroy()
     }
 
     override fun onReset() {
-        // Cancel pending operations on page reload
         scope.coroutineContext.cancelChildren()
         callback = null
         super.onReset()
