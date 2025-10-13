@@ -1,6 +1,7 @@
 package com.outsystems.nativesaveas
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.ContentResolver
@@ -77,7 +78,7 @@ class NativeSaveAs : CordovaPlugin() {
                 tempFilePath = tmpPath
 
                 withContext(Dispatchers.Main) {
-                    // Start folder picker flow (preferred) to avoid duplicates
+                    // Prefer folder-picker to avoid provider auto-suffixing like "name (1).ext" AFTER the extension.
                     launchFolderPicker()
                 }
 
@@ -94,6 +95,7 @@ class NativeSaveAs : CordovaPlugin() {
         return true
     }
 
+    // Ensure extension exists (derive from mime if missing)
     private fun ensureFilenameHasExtension(fileName: String, mimeType: String?): String {
         val trimmed = fileName.trim()
         if (trimmed.contains(".")) return trimmed
@@ -116,11 +118,9 @@ class NativeSaveAs : CordovaPlugin() {
         return if (ext.isNotEmpty()) trimmed + ext else trimmed
     }
 
-    /** Start a folder picker so we can create inside that folder and check for duplicates. */
     private fun launchFolderPicker() {
         try {
             val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                // Optional: allow creating new folders in picker UI
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     putExtra("android.content.extra.SHOW_ADVANCED", true)
                 }
@@ -128,12 +128,11 @@ class NativeSaveAs : CordovaPlugin() {
             cordova.setActivityResultCallback(this@NativeSaveAs)
             cordova.activity.startActivityForResult(intent, PICK_FOLDER_REQUEST)
         } catch (e: Exception) {
-            // If folder picker fails, fall back to ACTION_CREATE_DOCUMENT
+            // fallback to create-document if folder picker not available
             launchSaveDialogFallback(safeFileName ?: originalFileName ?: "file.bin")
         }
     }
 
-    /** Fallback to original create-document flow (some devices/providers might only support this). */
     private fun launchSaveDialogFallback(fileName: String) {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -171,7 +170,6 @@ class NativeSaveAs : CordovaPlugin() {
                 }
                 CREATE_FILE_REQUEST -> {
                     intent.data?.let { uri ->
-                        // fallback flow
                         copyFileWithProgress(uri)
                     } ?: run {
                         callback?.error("No destination URI received")
@@ -187,90 +185,116 @@ class NativeSaveAs : CordovaPlugin() {
         }
     }
 
-    /** Handle folder selection: check for existing same-named file, delete if present, create new doc, write. */
     private fun handleFolderPicked(treeUri: Uri, intent: Intent) {
         scope.launch {
             val activity = cordova.activity
+
+            // try to persist permissions for the tree
             try {
-                // Persist permissions to the tree so we can write
-                try {
-                    val takeFlags = (intent.flags
-                        and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
-                    activity.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
-                } catch (_: Exception) {
-                    // ignore if cannot persist
-                }
+                val takeFlags = (intent.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
+                activity.contentResolver.takePersistableUriPermission(treeUri, takeFlags)
+            } catch (_: Exception) {
+            }
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    withContext(Dispatchers.IO) {
-                        val resolver = activity.contentResolver
-                        // Parent document uri for the tree
-                        val parentDocId = DocumentsContract.getTreeDocumentId(treeUri)
-                        val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocId)
-
-                        var finalDocUri: Uri? = null
-
-                        try {
-                            // Try to find existing document with same display name
-                            val desired = safeFileName ?: originalFileName ?: "file.bin"
-                            val existing = try {
-                                DocumentsContract.findDocument(resolver, parentDocUri, desired)
-                            } catch (ex: Exception) {
-                                null
-                            }
-
-                            if (existing != null) {
-                                // Delete existing to force overwrite (may fail if provider disallows delete)
-                                try {
-                                    DocumentsContract.deleteDocument(resolver, existing)
-                                } catch (_: Exception) {
-                                    // If delete fails, fallback to createDocument which may create (1)
-                                }
-                            }
-
-                            // Create new document with exact name
-                            finalDocUri = try {
-                                DocumentsContract.createDocument(resolver, parentDocUri, mimeType
-                                    ?: "application/octet-stream", desired)
-                            } catch (ex: Exception) {
-                                null
-                            }
-
-                            // If createDocument failed, fallback to ACTION_CREATE_DOCUMENT (provider limitations)
-                            if (finalDocUri == null) {
-                                withContext(Dispatchers.Main) {
-                                    launchSaveDialogFallback(desired)
-                                }
-                                return@withContext
-                            }
-
-                            // Write file into finalDocUri
-                            copyFileWithProgress(finalDocUri)
-                        } catch (ex: Exception) {
-                            withContext(Dispatchers.Main) {
-                                callback?.error("Error during folder-save: ${ex.message}")
-                                cleanupTempFile()
-                                callback = null
-                            }
-                        }
-                    }
-                } else {
-                    // If API < 21, fallback to create-document
-                    withContext(Dispatchers.Main) {
-                        launchSaveDialogFallback(safeFileName ?: originalFileName ?: "file.bin")
-                    }
-                }
-            } catch (e: Exception) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+                // fallback to create-document
                 withContext(Dispatchers.Main) {
-                    callback?.error("Error handling folder pick: ${e.message}")
-                    cleanupTempFile()
-                    callback = null
+                    launchSaveDialogFallback(safeFileName ?: originalFileName ?: "file.bin")
+                }
+                return@launch
+            }
+
+            withContext(Dispatchers.IO) {
+                val resolver = activity.contentResolver
+                val parentDocId = DocumentsContract.getTreeDocumentId(treeUri)
+                val parentDocUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentDocId)
+                val desired = safeFileName ?: originalFileName ?: "file.bin"
+
+                try {
+                    // generate a free candidate using "name (n).ext" style
+                    val candidate = generateNextFreeName(resolver, parentDocUri, desired)
+
+                    // If candidate equals desired, no conflict — create directly
+                    val nameToCreate = candidate
+
+                    // Attempt to create the document with the chosen name
+                    var finalDocUri: Uri? = null
+                    try {
+                        finalDocUri = DocumentsContract.createDocument(resolver, parentDocUri, mimeType ?: "application/octet-stream", nameToCreate)
+                    } catch (ex: Exception) {
+                        finalDocUri = null
+                    }
+
+                    if (finalDocUri == null) {
+                        // provider didn't allow createDocument — fallback to ACTION_CREATE_DOCUMENT
+                        withContext(Dispatchers.Main) {
+                            launchSaveDialogFallback(nameToCreate)
+                        }
+                        return@withContext
+                    }
+
+                    // write content
+                    withContext(Dispatchers.Main) {
+                        copyFileWithProgress(finalDocUri)
+                    }
+                } catch (ex: Exception) {
+                    withContext(Dispatchers.Main) {
+                        callback?.error("Error saving to selected folder: ${ex.message}")
+                        cleanupTempFile()
+                        callback = null
+                    }
                 }
             }
         }
     }
 
-    /** Copy temp file to destinationUri with the same progress/notification code. */
+    /** Split name into base + extension */
+    private fun splitNameAndExt(name: String): Pair<String, String> {
+        val dotIndex = name.lastIndexOf('.')
+        return if (dotIndex > 0) {
+            name.substring(0, dotIndex) to name.substring(dotIndex)
+        } else {
+            name to ""
+        }
+    }
+
+    /** Find an existing document with exact displayName inside parentDocUri, or null if not found. */
+    private fun findDocumentInFolder(resolver: ContentResolver, parentDocumentUri: Uri, displayName: String): Uri? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                DocumentsContract.findDocument(resolver, parentDocumentUri, displayName)
+            } else {
+                null
+            }
+        } catch (ex: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Generate next free name like "report (1).pdf" using DocumentsContract.findDocument to check.
+     * Will attempt up to maxAttempts; on exhaustion it appends a timestamp.
+     */
+    private fun generateNextFreeName(resolver: ContentResolver, parentDocUri: Uri, desiredName: String, maxAttempts: Int = 100): String {
+        val (base, ext) = splitNameAndExt(desiredName)
+
+        // If original doesn't exist, return it
+        if (findDocumentInFolder(resolver, parentDocUri, desiredName) == null) {
+            return desiredName
+        }
+
+        // Try suffixes
+        for (i in 1..maxAttempts) {
+            val candidate = "$base ($i)$ext"
+            if (findDocumentInFolder(resolver, parentDocUri, candidate) == null) {
+                return candidate
+            }
+        }
+
+        // Fallback: timestamp
+        return "$base ${System.currentTimeMillis()}$ext"
+    }
+
     private fun copyFileWithProgress(destinationUri: Uri) {
         scope.launch {
             val activity = cordova.activity
@@ -342,10 +366,7 @@ class NativeSaveAs : CordovaPlugin() {
                                                 notificationBuilder
                                                     .setProgress(100, currentPercent, false)
                                                     .setContentText("$currentPercent%")
-                                                notificationManager?.notify(
-                                                    NOTIFICATION_ID,
-                                                    notificationBuilder.build()
-                                                )
+                                                notificationManager?.notify(NOTIFICATION_ID, notificationBuilder.build())
                                             } catch (_: Exception) {
                                             }
                                         }
